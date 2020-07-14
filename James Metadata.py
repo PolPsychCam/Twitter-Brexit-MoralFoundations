@@ -1,0 +1,116 @@
+import os
+import tweepy
+import json
+import math
+import glob
+import csv
+import zipfile
+import zlib
+from tweepy import TweepError
+from time import sleep
+os.chdir(r"C:/Users/jaack/OneDrive - University Of Cambridge/Summer Political Psychology/Brexit Twitter/Data")
+
+# CHANGE THIS TO THE USER YOU WANT
+user = 'andrealeadsom'
+
+with open('api_keys.json') as f:
+    keys = json.load(f)
+
+auth = tweepy.OAuthHandler(keys['consumer_key'], keys['consumer_secret'])
+auth.set_access_token(keys['access_token'], keys['access_token_secret'])
+api = tweepy.API(auth)
+user = user.lower()
+output_file = '{}.json'.format(user)
+output_file_short = '{}_short.json'.format(user)
+compression = zipfile.ZIP_DEFLATED
+
+with open('all_ids.json') as f:
+    ids = json.load(f) #Read in tweet IDs creates by James Scrape.py
+
+print('total ids: {}'.format(len(ids)))
+
+all_data = []
+start = 0
+end = 100
+limit = len(ids)
+i = math.ceil(limit / 100) #Create number of batches of 100 tweets to retrieve from API
+
+for go in range(i):
+    print('currently getting {} - {}'.format(start, end))
+    sleep(1)  # needed to prevent hitting API rate limit
+    id_batch = ids[start:end]
+    start += 100
+    end += 100
+    tweets = api.statuses_lookup(id_batch, include_entities=True)
+    for tweet in tweets:
+            all_data.append(dict(tweet._json))
+
+print('metadata collection complete')
+print('creating master json file')
+with open(output_file, 'w') as outfile:
+    json.dump(all_data, outfile)
+
+print('creating zipped master json file')
+zf = zipfile.ZipFile('{}.zip'.format(user), mode='w')
+zf.write(output_file, compress_type=compression)
+zf.close()
+
+results = []
+
+def is_retweet(entry):
+    return 'retweeted_status' in entry.keys()
+
+def get_source(entry):
+    if '<' in entry["source"]:
+        return entry["source"].split('>')[1].split('<')[0]
+    else:
+        return entry["source"]
+
+with open(output_file) as json_data:
+    data = json.load(json_data)
+    for entry in data:
+        t = {
+            "created_at": entry["created_at"],
+            "text": entry["text"],
+            "in_reply_to_screen_name": entry["in_reply_to_screen_name"],
+            "retweet_count": entry["retweet_count"],
+            "favorite_count": entry["favorite_count"],
+            "source": get_source(entry),
+            "id_str": entry["id_str"],
+            "is_retweet": is_retweet(entry)
+            ####BREAKS - Needs exception for when image/link not included####
+        }
+        
+        #This is to get links to any tweeted images. They are hidden deep in the json file structure
+        try:
+            t.update({"imagelink": entry["entities"]["media"][0]["media_url_https"]})
+        except:
+            t.update({"imagelink": "NA"})
+            print("No Image for this tweet")
+        
+        #This is to get titles for linked pages/articles. NB: For tweets over 13 months old this option is not available, but it is left in here in case of future analyses on newer data.
+        try:
+            t.update({"linktitle": entry["entities"]["urls"][0]["unwound"]["title"]})
+        except:
+            t.update({"linktitle": "NA"})
+            print("No Titled link in this tweet")
+        
+        results.append(t)
+
+print('creating minimized json master file')
+with open(output_file_short, 'w') as outfile:
+    json.dump(results, outfile)
+
+with open(output_file_short) as master_file:
+    data = json.load(master_file)
+    fields = ["favorite_count", "source", "text", "in_reply_to_screen_name", "is_retweet", "created_at", "retweet_count", "id_str", "linktitle", "imagelink"]
+   
+    print('creating CSV version of minimized json master file')
+    with open('{}.csv'.format(user), 'w', encoding="utf-8") as csvfile:
+        f = csv.writer(csvfile)
+        f.writerow(fields)
+        for x in data:
+            f.writerow([x["favorite_count"], x["source"], x["text"], x["in_reply_to_screen_name"], x["is_retweet"], x["created_at"], x["retweet_count"], x["id_str"], x["linktitle"], x["imagelink"]])
+        csvfile.close()    
+
+master_file.close()
