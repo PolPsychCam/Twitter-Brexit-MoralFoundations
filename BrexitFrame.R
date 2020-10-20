@@ -8,6 +8,7 @@
 rm(list = ls())
 setwd("C:/Users/jaack/OneDrive - University Of Cambridge/Summer Political Psychology/Brexit Twitter/Data")
 library('psych') #statistical tools
+library('tidyr') #makes things tidyr
 library('dplyr') #general data handling
 library('XML') #xml handling
 library('methods')#
@@ -17,10 +18,12 @@ library('SnowballC') #required for some Corpus cleaning functions
 library('car') #bonus regression tools
 library('ResourceSelection') #Hosmer Lemeshow test
 library('stargazer') #nice regression tables
+library('tesseract') #OCR
+library('magick') #Image refinement
 
 #### Hansard XMLs in ####
 ##Creates a list of strings for each xml file name in the folder
-filenames<-list.files("C:/Users/jaack/OneDrive - University Of Cambridge/Dissertation/Data/Hansard",full.names=T)
+filenames<-list.files("C:/Users/jaack/OneDrive - University Of Cambridge/Summer Political Psychology/Brexit Twitter/Data/Hansard",full.names=T)
 
 ##Parses those files into an R-readable format. 
 #Note this format holds only references to the external file, not the data itself
@@ -59,7 +62,7 @@ rm(Parlmeta)
 
 ##Add the text segments to their metadata in the dataframe
 Parlspeeches<-unlist(Parlspeeches)
-allParl$text<-lapply(Parlspeeches, xmlValue, recursive = TRUE)
+allParl$text<-as.character(lapply(Parlspeeches, xmlValue, recursive = TRUE, encoding = "UTF-8"))
 rm(Parlspeeches)
 
 ##In each entry, convert timestamp into days until referendum
@@ -70,11 +73,13 @@ allParl$days_to_go<-as.integer(as.Date("2016-06-23", format = "%Y-%m-%d")-allPar
 
 #There is now a dataframe with entries for every time a politician of interest spoke in parliament during the campaign period, with the text segment
 #(period of uninterrupted speech), speaker's name, and number of days until the referendum attached
+parlsentences <- strsplit(allParl$text, split = "(?<!\\w\\.\\w.)(?<![A-Z][a-z]\\.)(?<=\\.|\\?)\\s", perl=T) #finds pattern of .or?, followed by space, followed by capital.
+parlsentences <- data.frame(speaker = rep(allParl$speaker, sapply(parlsentences, length)), text = unlist(parlsentences), days_to_go = rep(allParl$days_to_go, sapply(parlsentences, length)))
 
 
 #### Marr PDFs in ####
 ##Creates a list of strings for each xml file name in the folder
-filenames<-list.files("C:/Users/jaack/OneDrive - University Of Cambridge/Dissertation/Data/Marr",full.names=T)
+filenames<-list.files("C:/Users/jaack/OneDrive - University Of Cambridge/Summer Political Psychology/Brexit Twitter/Data/Marr",full.names=T)
 
 ##Processes all files into a single corpus
 MarrCorpus<-Corpus(URISource(filenames), readerControl = list(reader = readPDF))
@@ -90,8 +95,8 @@ MarrDates<-as.integer(as.Date("2016-06-23", format = "%Y-%m-%d")-MarrDates)
 MarrCorpus<-tm_map(MarrCorpus, stripWhitespace)
 
 ##def and use new function to remove control character \r\n pattern
-stripControlChar <- content_transformer(function(x) gsub("\r\n", "", x))
-MarrCorpus<-tm_map(MarrCorpus, stripControlChar)
+stripControlChar<-content_transformer(function(x) gsub("\r\n", "", x))
+MarrCorpus<-tm_map(MarrCorpus, stripControlChar) #tm_map is a bit like sapply for Corpus
 
 ##Collapses each file in the corpus into a long string object (previously one object per page, now one per file)
 allMarr<-list()
@@ -124,65 +129,138 @@ allMarr$speaker<-recode_factor(allMarr$speaker, "1" = "David Cameron", "2" = "Yv
                                  "11" = "Chris Grayling", "12" = "Boris Johnson", "13" = "Sadiq Khan", "14" = "Andrea Leadsom",
                                  "15" = "Penny Mordaunt", "16" = "Nicola Sturgeon", "17" = "Leanne Wood", .default="NA", .ordered=FALSE)
 allMarr$text<-substring(allMarr$text, 5)
+marrsentences <- strsplit(allMarr$text, split = "(?<!\\w\\.\\w.)(?<![A-Z][a-z]\\.)(?<=\\.|\\?)\\s", perl=T) #finds pattern of .or?, followed by space, followed by capital.
+marrsentences <- data.frame(speaker = rep(allMarr$speaker, sapply(marrsentences, length)), text = unlist(marrsentences), days_to_go = rep(allMarr$days_to_go, sapply(marrsentences, length)))
 
 #### Twitter CSVs in ####
-#Creates a list of strings for each csv file name in the folder
-filenames<-list.files("C:/Users/jaack/OneDrive - University Of Cambridge/Dissertation/Data/Tweets",full.names=T)
+##Creates a list of strings for each csv file name in the folder
+# filenames<-list.files("C:/Users/jaack/OneDrive - University Of Cambridge/Summer Political Psychology/Brexit Twitter/Data/Full Tweets",full.names=T)
+# 
+# ##Reads in those files, removes replies, and one useless and misbehaving variable, and turns them into a dataframe
+# alltweets<-lapply(filenames,read.csv,stringsAsFactors = FALSE)
+# alltweets<-lapply(alltweets,select,-is_retweet)
+# alltweets<-bind_rows(alltweets, .id = "speaker")
+# row.names(alltweets) <- 1:nrow(alltweets)
 
-#Reads in those files, removes one useless and misbehaving variable, and turns them into a dataframe
-alltweets<-lapply(filenames,read.csv,stringsAsFactors = FALSE)
-alltweets<-lapply(alltweets,select,-is_retweet)
-alltweets<-bind_rows(alltweets, .id = "speaker")
-#Label speakers
-alltweets$speaker<-recode_factor(alltweets$speaker, "1" = "Andrea Leadsom", "2" = "Boris Johnson", "3" = "David Cameron", 
-              "4" = "David Davis", "5" = "Arlene Foster", "6" = "Frances O'Grady", "7" = "George Osborne", "8" = "Gisela Stuart",
-              "9" = "Leanne Wood", "10" = "Leave.EU", "11" = "Liam Fox", "12" = "Nicola Sturgeon", "13" = "Nigel Farage", "14" = "Penny Mordaunt", 
-              "15" = "Remain", "16" = "Ruth Davidson", "17" = "Sadiq Khan", "18" = "Tim Farron", "19" = "Vote Leave", .default="NA", .ordered=FALSE)
-#Remove punctuation
-alltweets$text<-lapply(alltweets$text, removePunctuation, ucp = TRUE)
-#Rationalise creation date into days until referendum, replyname to a logical, and rename columns
+##Label speakers - they should default to being read in alphabetical order of twitter handle (note e.g. Arlene Foster = "dupleader"), but its good to check
+# alltweets$speaker<-recode_factor(alltweets$speaker, "1" = "Andrea Leadsom", "2" = "Boris Johnson", "3" = "David Cameron", 
+#               "4" = "David Davis", "5" = "Arlene Foster", "6" = "Frances O'Grady", "7" = "George Osborne", "8" = "Gisela Stuart",
+#               "9" = "Leanne Wood", "10" = "Leave.EU", "11" = "Liam Fox", "12" = "Nicola Sturgeon", "13" = "Nigel Farage", "14" = "Penny Mordaunt", 
+#               "15" = "Remain", "16" = "Ruth Davidson", "17" = "Sadiq Khan", "18" = "Tim Farron", "19" = "Vote Leave", .default="NA", .ordered=FALSE)
+
+alltweets <- read.csv("all4.csv", encoding = "UTF-8")
+alltweets$imagetext <- NA
+##OCR
+ocrengine = tesseract(language = "eng") #creates the OCR engine with default params
+for (i in which(!is.na(alltweets$imagelink))) {
+    print(alltweets$imagelink[i])
+  
+    try({ #Try loop used in case of URL request failure #1485
+    inputimg <- image_read(alltweets$imagelink[i], strip = TRUE)
+    image_write(inputimg, 
+                path = paste("images/", substring(alltweets$imagelink[i],29,nchar(alltweets$imagelink[i])-4), ".png", sep = ""), 
+                format = "png", 
+                quality = 100,
+                flatten = TRUE)
+    
+    processedimg <- inputimg %>%
+      image_resize("2000x") %>%
+      image_convert(type = "Grayscale")
+    imgtext <- tesseract::ocr_data(processedimg, engine = ocrengine) #Run OCR on the URL at hand with the English engine     
+    
+    likelywords <- imgtext$word[imgtext$confidence>60] #strip out low-confidence guesses. Change this value if too few/many words are being picked up.
+    likelywords <- unlist(lapply(likelywords, tolower)) #lowercase everything
+    likelywords <- likelywords[nchar(likelywords)>1|likelywords=="a"|likelywords=="i"] #strip out non-word 1-letter signals (these are very common, e.g. | for straight lines)
+    likelysentence <- paste(likelywords, collapse = " ") #collapse the list of found words into a single string
+    alltweets$imagetext[i] <- if (length(likelysentence) == 0) NA else likelysentence #if there were any words found in the image, record them, else act as if there was no image at all
+    print(likelysentence)
+    })
+}
+#Delete OCR objects
+rm(inputimg,likelysentence,likelywords,ocrengine,processedimg,imgtext)
+
+
+##Rationalise creation date into days until referendum, replyname to a logical, and rename columns
 alltweets$created_at<-substring(alltweets$created_at,5,11)
 alltweets$created_at<-as.Date(alltweets$created_at, format = "%b %d") #defaults to 2020, but this doesn't matter if we pretend the referendum was this year (both 2020 and 2016 are leap years, though the campaign period was after February anyway)
 alltweets$created_at<-as.integer(as.Date("2020-06-23", format = "%Y-%m-%d")-alltweets$created_at)
-alltweets<-rename(alltweets, "favourites" = "favorite_count", "reply" = "in_reply_to_screen_name", "days_to_go" = "created_at", 
-                  "retweets" = "retweet_count", "tweet_ID" = "id_str")
+alltweets<-select(alltweets,  "author", "favourites" = "favorite_count", "retweets" = "retweet_count", "text", "imagetext", "reply" = "in_reply_to_screen_name", "days_to_go" = "created_at", "imagelink")
 alltweets$reply<-as.logical(alltweets$reply != "" & is.na(alltweets$reply) == FALSE)
+##Clarify NAs
+alltweets$imagetext[alltweets$imagetext==""] <- NA
+alltweets$imagetext[alltweets$imagetext=="NA"] <- NA
+##remove tweets not from politicians for study
+alltweets$author <- tolower(alltweets$author)
+alltweets <- filter(alltweets, author == "andrealeadsom"| author == "borisjohnson"| author == "david_cameron"| 
+                       author == "daviddavismp"| author == "dupleader"| author == "francesogrady"| author == "george_osborne"| 
+                       author == "giselastuart"| author == "leannewood"| author == "leaveeuofficial"| author == "liamfox"| 
+                       author == "nicolasturgeon"| author == "nigel_farage"| author == "pennymordaunt"| author == "peoplesvote_hq"|
+                       author == "ruthdavidsonmsp"| author == "sadiqkhan"| author == "timfarron"| author == "vote_leave")
 
+alltweets$speaker = recode_factor(alltweets$author, andrealeadsom = "Andrea Leadsom", borisjohnson = "Boris Johnson", 
+                      david_cameron = "David Cameron", daviddavismp = "David Davis", dupleader = "Arlene Foster", 
+                      francesogrady = "Frances O'Grady", george_osborne = "George Osborne", giselastuart = "Gisela Stuart",
+                      leannewood = "Leanne Wood", leaveeuofficial = "Leave.EU", liamfox = "Liam Fox", 
+                      nicolasturgeon = "Nicola Sturgeon", nigel_farage = "Nigel Farage", pennymordaunt = "Penny Mordaunt", 
+                      peoplesvote_hq = "Remain", ruthdavidsonmsp = "Ruth Davidson", sadiqkhan = "Sadiq Khan", 
+                      timfarron = "Tim Farron", vote_leave = "Vote Leave")
+alltweets = select(alltweets, -author)
 
-#### Bring it together ####
+#### Create central df ####
 #Standardisation
-allMarr$text<-as.character(allMarr$text)
+marrsentences$text<-as.character(marrsentences$text)
 alltweets$text<-as.character(alltweets$text)
-allParl$text<-as.character(allParl$text)
-alltext<-bind_rows(allMarr, allParl, alltweets, .id = "medium")
+alltweets$imagetext<-as.character(alltweets$imagetext)
+parlsentences$text<-as.character(parlsentences$text)
+
+#Binding
+# alltext<-bind_rows(allMarr, allParl, alltweets, .id = "medium")
+alltext<-bind_rows(marrsentences,parlsentences,alltweets, .id = "medium")
 alltext$medium<-recode_factor(alltext$medium, "1" = "Marr Interview", "2" = "Parliament", "3" = "Twitter")
+#Remove duplicated segments (some exist due to errors in the base transcipt. Where two speakers have used the same text, or the same speaker has used it twice, this is retained and treated as a double-endorsement)
+alltext<-alltext[-which(duplicated(alltext)),] #this doesn't refer to the $text column, so looks for completely duplicated entries including imagetext
 
-#Drop @s and web links. Almost certainly only affects Twitter but apply universally just in case
-alltext$text<-lapply(alltext$text, gsub, pattern = "https:.*?[[:space:]]", replacement = "")
-alltext$text<-lapply(alltext$text, gsub, pattern = "https:.*?$", replacement = "") #Any remaining web links did not have a space afterwards so must be the end of string, hence delete for this case
-alltext$text<-lapply(alltext$text, gsub, pattern = "@.*?\\>", replacement = "") #remove @tags
+#Create a variable to document OCR presence or absence
+alltext$hasimage = !is.na(alltext$imagetext)
+#create a new variable for the functional text of each segment by concatenating the shortened image text to the plain text, 
+#and creating an exception for when no image text exists. Then split that text into individual words
+alltext$countingtext <- paste(alltext$text, ifelse(is.na(alltext$imagetext), "", alltext$imagetext), sep = " ")
+alltext$countingtext <- strsplit(alltext$countingtext, split = "\\s+")
 
-#Resolve apostrophe unicode error
-alltext$text<-gsub("â€™","'",alltext$text)
+#Drop web links. Almost certainly only affects Twitter but apply universally just in case
+alltext$countingtext<-lapply(alltext$countingtext, gsub, pattern = "(?:(?:https?|ftp):\\/\\/)?[\\w/\\-?=%.]+\\.[\\w/\\-?=%.]+", replacement = "", perl = TRUE) #Remove URLs
 
-#Remove punctuation
-alltext$text<-as.list(removePunctuation(unlist(alltext$text), ucp =TRUE))
-
-#Remove any segments not referring to the EU
-alltext<-alltext[c(grep(" EU |Brexit|Euro|Referendum|Leave|Remain|Campaign|Exit|Stay|Single Market|Single Currency|350 million|Schengen|Juncker|23 June|June 23|UKIP|member|Stronger In|Take Back Control|takebackcontrol|passporting|Believe in Britain|We Want Our Country Back|Stronger Safer and Better Off|strongerin|renegotiation|breaking point|Australia|Pointsbased|Dyson|sovereign|national level|Brussels",alltext$text,ignore.case = TRUE)),]
-
-#Remove blank entries
-alltext<-filter(alltext, text!= "")
-
-#Remove duplicated segments (some exist due to errors in the base transcipt)
-alltext<-alltext[-which(print(duplicated(alltext))),]
+#Remove any segments not referring to the EU in either text *or* image text
+brexhitwords = "\\bEU(?!\\w)|Brexit|Euro|EU *Ref|Leav|Remain|23 *June|June *23|stronger *in|take *back *control|breaking *point|single *market|350 *m|In *Campaign|Out *Campaign|Single Currency|Schengen|Juncker|Believe *in *Britain|We *Want *Our *Country *Back|Stronger *Safer *and *Better *Off|membership|EU *member|member *state|Brussels|common *market|lexit|stay in|in *or *out|BBC *Debate"
+brexhitsegments = unique(c(grep(brexhitwords,alltext$text,ignore.case = TRUE, perl = TRUE), grep(brexhitwords,alltext$imagetext,ignore.case = TRUE, perl = TRUE)))
+alltext<-alltext[brexhitsegments,]
 
 #Remove old objects
-rm(allMarr,allParl,alltweets,doc,filenames,MarrDates,stripControlChar,breakInitials)
+rm(doc,filenames,MarrDates,stripControlChar,breakInitials,brexhitwords,brexhitsegments)
 
-####Input person regressors####
+#### Adjust word counts ####
+#Count the pre-split 'counting text' column to get word counts
+alltext$wordcount <- lengths(alltext$countingtext) 
+#Check distributions of word count. Twitter has clear outliers, caused by extensive OCR entries.
+summary(alltext$wordcount)
+summary(filter(alltext,medium == "Twitter")$wordcount)
+summary(filter(alltext,medium == "Marr Interview")$wordcount)
+summary(filter(alltext,medium == "Parliament")$wordcount)
+
+#Crop excessive OCR entries by ensuring no text has more than 100 words
+alltext$countingtext <- lapply(alltext$countingtext, '[', 1:100) #who knew that's how to subset in lapply!
+alltext$countingtext <- lapply(alltext$countingtext, na.omit) #required because subsetting above the existing length of a list imputs NAs
+#re-run wordcount
+alltext$wordcount <- lengths(alltext$countingtext) 
+#Check distributions again, now Twitter is more in line. They don't need to be identical, just close enough to be 'fair analogues'.
+summary(filter(alltext,medium == "Twitter")$wordcount)
+summary(filter(alltext,medium == "Marr Interview")$wordcount)
+summary(filter(alltext,medium == "Parliament")$wordcount)
+
+#### Input person regressors####
 index <- names(table(alltext$speaker))
-Brexiteer <- c(TRUE,TRUE,TRUE,TRUE,FALSE,TRUE,FALSE,FALSE,TRUE,FALSE,TRUE,TRUE,TRUE,FALSE,TRUE,TRUE,TRUE,FALSE,FALSE,FALSE,FALSE,TRUE,FALSE)
+#The labels below are contingent on the order of the speakers read in above THIS MUST BE DOUBLE CHECKED WHEN RUN BECAUSE IT CAN EASILY WARP RESULTS!
+Brexiteer <- c(T,T,T,T,F,T,F,F,T,F,T,T,T,F,T,T,T,F,F,F,F,T,F)
 Conservative <- c(T,F,T,T,T,T,F,T,F,F,F,T,T,F,F,T,T,F,T,F,F,F,F)
 Labour <- c(F,F,F,F,F,F,F,F,T,F,F,F,F,F,F,F,F,F,F,T,F,F,T)
 alltext$brexiteer <- Brexiteer[match(alltext$speaker, index)]
@@ -199,16 +277,16 @@ for (j in 1:length(indices)) {
 #RESULT:50 out of 50 are correctly identified. Noteworthy that many tweets are quotes from other campaigners
 
 ##Check remain tags
-Remaintagged<-alltext[grep("StrongerIN|Stronger In", alltext$text, ignore.case = TRUE),]
+Remaintagged<-alltext[grep("StrongerIN|Stronger In", alltext$countingtext, ignore.case = TRUE),]
 table(Remaintagged$brexiteer)
-print(Remaintagged$text[which(Remaintagged$brexiteer)])
-#RESULT: 34/1703 are Leave-side tweets, all can be manually verified as pro-Leave sentiment
+print(Remaintagged$countingtext[which(Remaintagged$brexiteer)])
+#RESULT: 0/387 are written by leavers
 
 ##Check Leave tags
-Leavetagged<-alltext[grep("VoteLeave|TakeControl|TakeBackControl", alltext$text, ignore.case = TRUE),]
+Leavetagged<-alltext[grep("VoteLeave|TakeControl|TakeBackControl", alltext$countingtext, ignore.case = TRUE),]
 table(Leavetagged$brexiteer)
-print(Leavetagged$text[-which(Leavetagged$brexiteer)])
-#RESULT: 189/1173 are Remain-side tweets, all can be manually verified as pro-Remain sentiment. Lots of �350M bashing.
+print(Leavetagged$countingtext[-which(Leavetagged$brexiteer)])
+#RESULT: 0/775 are written by remainers
 
 rm(Leavetagged,Remaintagged,indices,j)
 
@@ -220,15 +298,82 @@ Auth <- c("preserve(?!\\w)|loyal|betray|treason|traitor|treacher|disloyal|aposta
 Pure <- c("preserve(?!\\w)|ruin|exploit(?!\\w)|exploits(?!\\w)|exploited(?!\\w)|exploiting(?!\\w)|apostasy(?!\\w)|apostate(?!\\w)|heretic|piety(?!\\w)|pious(?!\\w)|purity(?!\\w)|pure|clean|steril|sacred|chast|holy(?!\\w)|holiness(?!\\w)|saint|wholesome|celiba|abstention(?!\\w)|virgin(?!\\w)|virgins(?!\\w)|virginity(?!\\w)|virginal(?!\\w)|austerity(?!\\w)|integrity(?!\\w)|modesty(?!\\w)|abstinen|abstemiousness(?!\\w)|upright(?!\\w)|limpid(?!\\w)|unadulterated(?!\\w)|maiden(?!\\w)|virtuous(?!\\w)|refined(?!\\w)|decen|immaculate(?!\\w)|innocent(?!\\w)|pristine(?!\\w)|church|disgust|deprav|disease|unclean|contagio|indecen|sin(?!\\w)|sinful|sinner|sins(?!\\w)|sinned(?!\\w)|sinning(?!\\w)|slut|whore(?!\\w)|dirt|impiety(?!\\w)|impious(?!\\w)|profan|gross(?!\\w)|repuls|sick|promiscu|lewd|adulter|debauche|defile|tramp(?!\\w)|prostitut|unchaste(?!\\w)|intemperate(?!\\w)|wanton(?!\\w)|profligate(?!\\w)|filth|trashy(?!\\w)|obscen|lax(?!\\w)|taint|stain|tarnish|debase|desecrat|wicked|blemish(?!\\w)|exploitat|pervert(?!\\w)|wretched")
 Lib <-c("exploit(?!\\w)|exploits(?!\\w)|exploited(?!\\w)|exploting(?!\\w)|rights(?!\\w)|obey|obedient|duti|order|supremacy(?!\\w)|control(?!\\w)|submi|serve(?!\\w)|abide(?!\\w)|defere|defer(?!\\w)|defian|rebel|dissent|subver|disobe|defy|defector(?!\\w)|nonconformist(?!\\w)|protest(?!\\w)|free(?!\\w)|freedom(?!\\w)|liberty(?!\\w)|autonom|choice(?!\\w)|choose(?!\\w)|liberate(?!\\w)|liberation(?!\\w)|sovereign|independent(?!\\w)|independence(?!\\w)|dictat|totalitar|coerc|authoritarian|tyran")
 
-alltext$care<-as.logical(lapply(alltext$text, grepl, pattern = Care, ignore.case = TRUE, perl = TRUE))
-alltext$fair<-as.logical(lapply(alltext$text, grepl, pattern = Fair, ignore.case = TRUE, perl = TRUE))
-alltext$loyal<-as.logical(lapply(alltext$text, grepl, pattern = Loyal, ignore.case = TRUE, perl = TRUE))
-alltext$auth<-as.logical(lapply(alltext$text, grepl, pattern = Auth, ignore.case = TRUE, perl = TRUE))
-alltext$pure<-as.logical(lapply(alltext$text, grepl, pattern = Pure, ignore.case = TRUE, perl = TRUE))
-alltext$lib<-as.logical(lapply(alltext$text, grepl, pattern = Lib, ignore.case = TRUE, perl = TRUE))
-alltext$anymoral<-as.logical(ifelse(alltext$care == TRUE|alltext$fair == TRUE|alltext$loyal == TRUE|alltext$auth == TRUE|alltext$pure == TRUE|
+alltext$care <- as.logical(lapply(lapply(alltext$countingtext, grepl, pattern = Care, ignore.case = TRUE, perl = TRUE), any))
+alltext$fair <- as.logical(lapply(lapply(alltext$countingtext, grepl, pattern = Fair, ignore.case = TRUE, perl = TRUE), any))
+alltext$loyal <- as.logical(lapply(lapply(alltext$countingtext, grepl, pattern = Loyal, ignore.case = TRUE, perl = TRUE), any))
+alltext$auth <- as.logical(lapply(lapply(alltext$countingtext, grepl, pattern = Auth, ignore.case = TRUE, perl = TRUE), any))
+alltext$pure <- as.logical(lapply(lapply(alltext$countingtext, grepl, pattern = Pure, ignore.case = TRUE, perl = TRUE), any))
+alltext$lib <- as.logical(lapply(lapply(alltext$countingtext, grepl, pattern = Lib, ignore.case = TRUE, perl = TRUE), any))
+alltext$anymoral <- as.logical(ifelse(alltext$care == TRUE|alltext$fair == TRUE|alltext$loyal == TRUE|alltext$auth == TRUE|alltext$pure == TRUE|
                                       alltext$lib == TRUE, "TRUE", "FALSE"))
-rm(Auth,Care,Fair,General,Lib,Loyal,Pure)
+rm(Auth,Care,Fair,Lib,Loyal,Pure)
+
+#### Export for Gorilla Context Analysis ####
+gorillabase <- pivot_longer(alltext, cols = c("care","fair","loyal","auth","pure","lib","anymoral"), names_to = "Foundation", values_to = "ispresent")
+gorillabase <- filter(gorillabase, ispresent == TRUE)  
+gorillabase <- select(gorillabase, -c(ispresent, countingtext))
+gorillabase$Foundation <- recode_factor(gorillabase$Foundation, "care" = "Care", "fair" = "Fairness", "loyal" = "Loyalty", "pure" = "Purity", "auth" = "Authority", "lib" = "Liberty")
+gorillabase <- filter(gorillabase, Foundation !="anymoral")
+for (i in 1:length(gorillabase$imagelink)) {
+  if (is.na(gorillabase$imagelink[i]) == FALSE && grepl("video", gorillabase$imagelink[i]) == FALSE) {
+    gorillabase$imagelink[i] <- paste(substring(gorillabase$imagelink[i],29,nchar(gorillabase$imagelink[i])-4), ".png", sep = "")
+  } else {
+    gorillabase$imagelink[i] <- NA
+  }
+}
+write.csv(gorillabase, "gorillaexport.csv")
+
+#### Gorilla Context Analysis ####
+contexts = read.csv("contexts.csv")
+#Remove non-data events
+contexts = dplyr::filter(contexts, Zone.Name == "Otherexplain" | Zone.Name == "Endorsement" | Zone.Name == "IsSlogan" | Zone.Name == "Outofcontext" | Zone.Name == "Rejection")
+#Rename columns
+contexts = rename(contexts, ReviewerNumber = ï..Participant.Private.ID, Excerpt = Spreadsheet.Row)
+#Recode data
+contexts[contexts$Response == "",]$Response = NA
+contexts[contexts$ReviewerNumber == 1880680,]$ReviewerNumber = 1
+contexts[contexts$ReviewerNumber == 1924705,]$ReviewerNumber = 2
+contexts[is.na(contexts$Response),]$Response = TRUE
+#Pivot
+contexts = pivot_wider(contexts, names_from = Zone.Name, values_from = Response)
+contexts$Endorsement = as.logical(contexts$Endorsement)
+contexts$Outofcontext = as.logical(contexts$Outofcontext)
+contexts$Rejection = as.logical(contexts$Rejection)
+
+#where a button wasn't pressed, implicitly false
+contexts$IsSlogan = ifelse(is.na(contexts$IsSlogan), FALSE, TRUE)
+contexts[is.na(contexts$Otherexplain),]$Otherexplain = FALSE
+contexts[is.na(contexts$Endorsement),]$Endorsement = FALSE
+contexts[is.na(contexts$Outofcontext),]$Outofcontext = FALSE
+contexts[is.na(contexts$Rejection),]$Rejection = FALSE
+
+#Merge rows referring to the same excerpt
+contexts = contexts %>%
+  group_by(Excerpt, ReviewerNumber) %>% 
+  fill(IsSlogan,Otherexplain,Endorsement,Outofcontext,Rejection, .direction = "downup")
+contexts = unique(contexts2)
+contexts = ungroup(contexts2)
+
+metadata = data.frame(Totalacc = 1)
+metadata$Totalacc = 100 * table(contexts$Endorsement)["TRUE"]/length(contexts$Endorsement)
+metadata$R1acc = 100 * table(filter(contexts, ReviewerNumber == 1)$Endorsement)["TRUE"]/nrow(filter(contexts, ReviewerNumber == 1))
+metadata$R2acc = 100 * table(filter(contexts, ReviewerNumber == 2)$Endorsement)["TRUE"]/nrow(filter(contexts, ReviewerNumber == 2))
+metadata$twotickacc
+
+
+R1 = select(filter(contexts, ReviewerNumber == 1), Excerpt, Outofcontext, Endorsement, Rejection)
+R2 = select(filter(contexts, ReviewerNumber == 2), Excerpt, Outofcontext, Endorsement, Rejection)
+R1 = transmute(R1, response = ifelse(Endorsement == TRUE, 1, ifelse(Outofcontext == TRUE, 2, 3)), Excerpt = Excerpt) #1 = Endorse, 2 = OOC, 3 = Reject
+R2 = transmute(R2, response = ifelse(Endorsement == TRUE, 1, ifelse(Outofcontext == TRUE, 2, 3)), Excerpt = Excerpt)
+
+Agreement = left_join(R1, R2, by = "Excerpt", suffix = c("_R1", "_R2"))
+Agreement$response_R1 = factor(Agreement$response_R1, levels = c("1", "2", "3"))
+Agreement$response_R2 = factor(Agreement$response_R2, levels = c("1", "2", "3"))
+
+Agreementtable = table(Agreement$response_R1, Agreement$response_R2)
+
+metadata$twotickacc = 100 * Agreementtable[1,1]/sum(Agreementtable)
+metadata$InterRaterReliability =  cohen.kappa(Agreementtable, alpha=.05)$kappa
 #### Models ####
 LogReg <- function(DV, model) {
   ##ASSUMPTION CHECKS
@@ -255,7 +400,7 @@ LogReg <- function(DV, model) {
   }
   #Multivariate - context and person predictors
   if (model == "context") {
-    model <- glm(family = binomial(link = "logit"), DV ~ brexiteer + conservative + labour + medium + days_to_go , data = alltext)
+    model <- glm(family = binomial(link = "logit"), DV ~ brexiteer + conservative + labour + medium + days_to_go + hasimage, data = alltext)
     if (any(vif(model)>5)) {
       print(vif(model))
       return("MODEL NOT RUN - Multicollinearity violation")
@@ -274,6 +419,7 @@ LogReg <- function(DV, model) {
     }
   }
 }
+
 LinReg <- function(DV, model) {
   ##ASSUMPTION CHECKS
   #Independent variable is binary
@@ -296,7 +442,7 @@ LinReg <- function(DV, model) {
   
   #Multivariate - framings
   if (model == "twitterall") {
-    model <- lm(DV ~ care + fair + loyal + auth + lib + pure + days_to_go + reply, data = allTwitter)
+    model <- lm(DV ~ care + fair + loyal + auth + lib + pure + days_to_go + reply + hasimage, data = allTwitter)
     
     if (any(vif(model)>5)) {
       print(vif(model))
@@ -334,7 +480,7 @@ unifair$aic<-round(unifair$aic)
 uniloyal$aic<-round(uniloyal$aic)
 uniauth$aic<-round(uniauth$aic)
 unipure$aic<-round(unipure$aic)
-unilib$aic<-round(uniclib$aic)
+unilib$aic<-round(unilib$aic)
 contextcare$aic<-round(contextcare$aic)
 contextfair$aic<-round(contextfair$aic)
 contextloyal$aic<-round(contextloyal$aic)
@@ -348,28 +494,28 @@ personauth$aic<-round(personauth$aic)
 personpure$aic<-round(personpure$aic)
 personlib$aic<-round(personlib$aic)
 
-stargazer(alltext, type = "html", keep = c("days_to_go","favourites","retweets"), omit.summary.stat = c("min","max"), out = "", digits)
+stargazer(alltext, type = "html", keep = c("days_to_go","favourites","retweets"), omit.summary.stat = c("min","max"), out = "tables/summary.html", digits = 0)
 
 ##Get Univariate logistic regression table
 stargazer(unicare,unifair,uniloyal,uniauth,unipure,unilib,
-          type = "html", title = "Fig. 1 Univariate Models", align = TRUE, out = "model1.html", omit.stat = c("ll"), 
+          type = "html", title = "Fig. 1 Univariate Models", align = TRUE, out = "tables/model1.html", omit.stat = c("ll"), 
           dep.var.labels = "Moral Foundation",
           column.labels = c("Care","Fairness","Loyalty","Authority","Purity","Liberty"))
 rm(unicare,unifair,uniloyal,uniauth,unipure,unilib)
 ##Get Person-level Multivariate logistic regression table
 stargazer(personcare,personfair,personloyal,personauth,personpure,personlib,
-          type = "html", title = "Fig. 2 Person-level multivariate Models", align = TRUE, out = "model2.html", omit.stat = c("ll"),
+          type = "html", title = "Fig. 2 Person-level multivariate Models", align = TRUE, out = "tables/model2.html", omit.stat = c("ll"),
           dep.var.labels = "Moral Foundation",
           column.labels = c("Care","Fairness","Loyalty","Authority","Purity","Liberty"))
 rm(personcare,personfair,personloyal,personauth,personpure,personlib)
 ##Get Context-level Multivariate logistic regression table
 stargazer(contextcare,contextfair,contextloyal,contextauth,contextpure,contextlib,
-          type = "html", title = "Fig. 3 Context-level multivariate Models", align = TRUE, out = "model3.html", omit.stat = c("ll"),
+          type = "html", title = "Fig. 3 Context-level multivariate Models", align = TRUE, out = "tables/model3.html", omit.stat = c("ll"),
           dep.var.labels = "Moral Foundation",
           column.labels = c("Care","Fairness","Loyalty","Authority","Purity","Liberty"))
 ##Make exponent-coefficient tables
 stargazer(contextcare,contextfair,contextloyal,contextauth,contextpure,contextlib,
-          type = "html", title = "Fig. 4 Final model coefficient exponents", align = TRUE, out = "table4.html", 
+          type = "html", title = "Fig. 4 Final model coefficient exponents", align = TRUE, out = "tables/table4.html", 
           omit.stat = c("ll","aic"), dep.var.labels = "Moral Foundation", apply.coef = function(x) exp(x), report = "vc", 
           omit.table.layout = "sn", column.labels = c("Care","Fairness","Loyalty","Authority","Purity","Liberty"), omit = "Constant")
 rm(contextcare,contextfair,contextloyal,contextauth,contextpure,contextlib)
@@ -378,7 +524,7 @@ leavecamps<-filter(alltext, speaker == "Vote Leave"|speaker == "Leave.EU")
 leavecamps$leaveeu<-ifelse(leavecamps$speaker == "Leave.EU",TRUE,FALSE)
 leavecampsmodel<-LogReg(leavecamps$leaveeu, model = "leavecamps")
 stargazer(leavecampsmodel,
-          type = "html", title = "Fig. 5 Leave camps differentiated", align = TRUE, out = "model4.html", 
+          type = "html", title = "Fig. 5 Leave camps differentiated", align = TRUE, out = "tables/model4.html", 
           omit.stat = c("ll"), dep.var.labels.include = FALSE, 
           covariate.labels = c("Care","Fairness","Loyalty","Authority","Purity","Liberty"),
           column.labels = c("Tweet is from Leave.EU rather than Vote Leave"))
@@ -394,5 +540,34 @@ allTwitter$zfavs = (log(allTwitter$favourites+1) - log(allTwitter$meanfavs+1))/l
 allTwitter$zrts = (log(allTwitter$retweets+1) - log(allTwitter$meanretweets+1))/log(allTwitter$sdretweet+1)
 ##Model tweet popularity
 stargazer(LinReg(allTwitter$zfavs, model = "twitterframes"), LinReg(allTwitter$zfavs, model = "twitterall"), LinReg(allTwitter$zrts, model = "twitterframes"),
-          LinReg(allTwitter$zrts, model = "twitterall"), type = "html", title = "Fig. 6 Multivariate Linear Models", align = TRUE, out = "model5.html",
+          LinReg(allTwitter$zrts, model = "twitterall"), type = "html", title = "Fig. 6 Multivariate Linear Models", align = TRUE, out = "tables/model5.html",
           table.placement = "h", column.labels = c("Favourites","Favourites","Retweets","Retweets"))
+rm(allTwitter,leavecamps,leavecampsmodel,personmeans)
+
+
+#### Graphics ####
+plotdata = alltext %>%
+  group_by(brexiteer) %>% 
+  summarise(Care = sum(care == TRUE) / n(),
+            Fairness = sum(fair == TRUE) / n(),
+            Loyalty = sum(loyal == TRUE) / n(),
+            Authority = sum(auth == TRUE) / n(),
+            Purity = sum(pure == TRUE) / n(),
+            Liberty = sum(lib == TRUE) / n())
+
+plotdata = as.data.frame(t(as.matrix(plotdata, ncol = 6)))
+colnames(plotdata) <- c("Remain", "Leave")
+plotdata <- plotdata[-1,]
+plotdata = plotdata * 100
+plotdata$foundation = rownames(plotdata)
+plotdata = pivot_longer(plotdata, cols = c("Remain", "Leave"), names_to = "Campaign")
+
+library(ggplot2)
+foundplot = ggplot(plotdata, aes(x = foundation, y = value, fill = Campaign)) + 
+  geom_bar(position = "dodge", stat = "identity") +
+  labs(title = "Comparative Frequency of Framings", x = "Foundation", y = "Frequency (% of segments)") +
+  scale_fill_manual(values = c("firebrick", "steelblue1")) +
+  scale_y_continuous(breaks = c(0,5,10,15,20,25)) +
+  theme_classic()
+print(foundplot)
+ggsave("foundplot.jpg", plot = foundplot, device = "jpeg")
